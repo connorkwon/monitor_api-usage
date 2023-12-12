@@ -3,7 +3,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 
-def get_secrets(secret_name):
+def get_secrets(secret_name, output: str = 'json'):
     client = boto3.client('secretsmanager')
 
     try:

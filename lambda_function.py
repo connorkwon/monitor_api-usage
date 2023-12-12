@@ -19,6 +19,8 @@ def fs_usage(start_time, end_time, standard_date):
             fields @timestamp, @message, @logStream, @log, clientId
             | filter clientId = '{app_client['ClientId']}'
             | filter (status = 200) or (status >= 400 and status < 500)
+            | filter routeKey != 'GET /'
+            | filter routeKey != 'GET /version'
             | filter @timestamp >= {int(start_time.timestamp()) * 1000} and @timestamp < {int(end_time.timestamp()) * 1000}
             | count()
         """
