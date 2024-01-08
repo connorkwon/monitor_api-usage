@@ -6,18 +6,19 @@ import log_insight
 import intergration
 import getSecret
 import converter
+import slack
 
 # log_group = '/aws/apigateway/log-prd-faceserver-httpapi'
 log_group = '/aws/apigateway/fs-java-logs'
 user_pool_id = 'ap-northeast-2_lfp7T7azV'
 
 
-def fs_usage_count(start_time, end_time, standard_date):
+def get_fs_usage_count(standard_date, start_time, end_time):
     client = boto3.client('logs')
 
     usage = []
     for app_client in get_app_client_ids():
-        query = log_insight.query_count
+        query = log_insight.query_count(app_client, start_time, end_time)
 
         try:
             query_id = client.start_query(
@@ -45,13 +46,12 @@ def fs_usage_count(start_time, end_time, standard_date):
     return usage
 
 
-def fs_usage_raw(start_time, end_time, standard_date):
+def get_fs_usage_raw(standard_date, start_time, end_time):
     client = boto3.client('logs')
 
-    usage = []
     for app_client in get_app_client_ids():
-        # fields @timestamp, @message, @logStream, @log, clientId
-        query = log_insight.query_raw
+        query = log_insight.query_raw(app_client, start_time, end_time)
+        print(f'## app client: {app_client}')
 
         # Get Query ID
         try:
@@ -73,19 +73,11 @@ def fs_usage_raw(start_time, end_time, standard_date):
             # Check if result exists (Which means, the app has request logs)
             if response['results'][0]:
                 result_raw = converter.create_csv(response)
-                print('result_raw')
                 print(result_raw)
 
         except Exception as e:
             print(f"Error during query for client {app_client['ClientId']}: {e}")
 
-        # usage.append({
-        #     'StandardDate': standard_date,
-        #     'ClientName': app_client["ClientName"],
-        #     'RAW': result_raw
-        # })
-
-    # return usage
     return result_raw
 
 
@@ -108,30 +100,52 @@ def get_app_client_ids():
         return None
 
 
+def set_monthly():
+    now = datetime.now()
+    first_day_of_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end_time = first_day_of_current_month - timedelta(days=1) + timedelta(hours=23, minutes=59, seconds=59,
+                                                                          microseconds=999999)
+    start_time = end_time.replace(day=1)
+    standard_date = start_time.date().strftime('[Monthly] %Y년 %m월')
+    return standard_date, start_time, end_time
+
+
+def set_daily():
+    end_time = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_time = end_time - timedelta(days=1)
+    standard_date = start_time.date().strftime('[Daily] %Y년 %m월 %d일')
+    return standard_date, start_time, end_time
+
+
 def lambda_handler(event, context):
     is_monthly = event.get('monthly', False)
+    webhook_url = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")[
+        'SLACK_WEBHOOK_URL_common-notify']
+    token = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")[
+        'SLACK_TOKEN_fileUpload']
+    channel_id = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")[
+        'SLACK_CHANNEL_ID']
+
     if is_monthly:  # monthly usage (Payload comes from Amazon EventBridge Scheduler)
-        now = datetime.now()
-        first_day_of_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_time = first_day_of_current_month - timedelta(days=1) + timedelta(hours=23, minutes=59, seconds=59,
-                                                                              microseconds=999999)
-        start_time = end_time.replace(day=1)
-        standard_date = start_time.date().strftime('[Monthly] %Y년 %m월')
+        set_monthly()
+        fs_usage_raw = get_fs_usage_raw(set_monthly()[0], set_monthly()[1], set_monthly()[2])
 
+        file_path = 'usage.csv'
+        with open(file_path, 'w', newline='', encoding='utf-8') as file:
+            file.write(fs_usage_raw)
+
+        slack.api_fileUpload(token=token, file=file_path, channel_id=channel_id)
+        # slack.webhook_send(message=fs_usage_raw, webhook_url=webhook_url)
     elif not is_monthly:  # daily usage
-        end_time = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        start_time = end_time - timedelta(days=1)
-        standard_date = start_time.date().strftime('[Daily] %Y년 %m월 %d일')
+        set_daily()
+        fs_usage_raw = get_fs_usage_raw(set_daily()[0], set_daily()[1], set_daily()[2])
 
-    # Send Slack
-    # usage_count = fs_usage_count(start_time, end_time, standard_date)
-    usage_raw = fs_usage_raw(start_time, end_time, standard_date)
-    # webhook_url = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")['SLACK_WEBHOOK_URL']
-    webhook_url = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")['SLACK_WEBHOOK_URL_common-notify']
+        file_path = 'usage.csv'
+        with open(file_path, 'w', newline='', encoding='utf-8') as file:
+            file.write(fs_usage_raw)
 
-    # send_slack(content=converter.friendly_text(usage_count), webhook_url=webhook_url)
-    intergration.send_slack(content=usage_raw, webhook_url=webhook_url)
-
+        slack.api_fileUpload(token=token, file=file_path, channel_id=channel_id)
+        # slack.webhook_send(message=fs_usage_raw, webhook_url=webhook_url)
     # Send SES
     # recipients = ["yk.kwon@alcherainc.com", "dh.yang@alcherainc.com", "chssha98@useb.co.kr"]
     # intergration.send_ses(content=converter.list_to_html(usage), recipients=recipients, is_monthly=is_monthly)
