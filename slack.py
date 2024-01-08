@@ -9,7 +9,8 @@ def send(webhook_url, message):
     data = {
         "text": message
     }
-    print(json.dumps(data))
+    print('Slack Message has been sent')
+    # print(json.dumps(data))
     response = requests.post(webhook_url, headers=headers, data=json.dumps(data))
 
     return response

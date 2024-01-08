@@ -1,4 +1,6 @@
 import json
+import io
+import csv
 
 
 def friendly_text(data_list):
@@ -47,3 +49,25 @@ def list_to_html(data_list):
     html_content += "</table></body></html>"
 
     return html_content
+
+
+def create_csv(data):
+    # Your provided data
+    query_results = data
+
+    # Create in-memory CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Write header
+    writer.writerow([item['field'] for item in query_results['results'][0]])
+
+    # Write data
+    for result_set in query_results['results']:
+        writer.writerow([item['value'] for item in result_set])
+
+    # Get CSV content
+    csv_content = output.getvalue()
+    output.close()
+
+    return csv_content

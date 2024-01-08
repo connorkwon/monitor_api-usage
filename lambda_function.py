@@ -1,35 +1,29 @@
-import ses
-import slack
-import getSecret
-import converter
 import boto3
 import time
 from datetime import datetime, timedelta
 
+import log_insight
+import intergration
+import getSecret
+import converter
+
+# log_group = '/aws/apigateway/log-prd-faceserver-httpapi'
 log_group = '/aws/apigateway/fs-java-logs'
 user_pool_id = 'ap-northeast-2_lfp7T7azV'
 
 
-def fs_usage(start_time, end_time, standard_date):
+def fs_usage_count(start_time, end_time, standard_date):
     client = boto3.client('logs')
 
     usage = []
     for app_client in get_app_client_ids():
-        query = f"""
-            fields @timestamp, @message, @logStream, @log, clientId
-            | filter clientId = '{app_client['ClientId']}'
-            | filter (status = 200) or (status >= 400 and status < 500)
-            | filter routeKey != 'GET /'
-            | filter routeKey != 'GET /version'
-            | filter @timestamp >= {int(start_time.timestamp()) * 1000} and @timestamp < {int(end_time.timestamp()) * 1000}
-            | count()
-        """
-        print(query)
+        query = log_insight.query_count
 
         try:
             query_id = client.start_query(
                 logGroupName=log_group,
-                startTime=int(start_time.timestamp()),
+                # startTime=int(start_time.timestamp()),
+                startTime=1701408610000,
                 endTime=int(end_time.timestamp()),
                 queryString=query
             )['queryId']
@@ -38,19 +32,61 @@ def fs_usage(start_time, end_time, standard_date):
                 time.sleep(1)
                 response = client.get_query_results(queryId=query_id)
 
-            count = response['results'][0][0]['value'] if response['results'] else 0
-            print('response')
-            print(response)
+            result_count = response['results'][0][0]['value'] if response['results'] else 0
         except Exception as e:
             print(f"Error during query for client {app_client['ClientId']}: {e}")
 
         usage.append({
             'StandardDate': standard_date,
             'ClientName': app_client["ClientName"],
-            'Count': count
+            'Count': result_count
         })
 
     return usage
+
+
+def fs_usage_raw(start_time, end_time, standard_date):
+    client = boto3.client('logs')
+
+    usage = []
+    for app_client in get_app_client_ids():
+        # fields @timestamp, @message, @logStream, @log, clientId
+        query = log_insight.query_raw
+
+        # Get Query ID
+        try:
+            query_id = client.start_query(
+                logGroupName=log_group,
+                # startTime=int(start_time.timestamp()),
+                startTime=1701408610000,
+                endTime=int(end_time.timestamp()),
+                queryString=query
+            )['queryId']
+
+            # Execute Query && Wait for the query to be done
+            response = None
+            while response is None or response['status'] == 'Running':
+                time.sleep(1)
+                response = client.get_query_results(queryId=query_id)
+                # print(response)
+
+            # Check if result exists (Which means, the app has request logs)
+            if response['results'][0]:
+                result_raw = converter.create_csv(response)
+                print('result_raw')
+                print(result_raw)
+
+        except Exception as e:
+            print(f"Error during query for client {app_client['ClientId']}: {e}")
+
+        # usage.append({
+        #     'StandardDate': standard_date,
+        #     'ClientName': app_client["ClientName"],
+        #     'RAW': result_raw
+        # })
+
+    # return usage
+    return result_raw
 
 
 def get_app_client_ids():
@@ -72,23 +108,6 @@ def get_app_client_ids():
         return None
 
 
-def send_slack(content, webhook_url):
-    slack.send(webhook_url=webhook_url, message=content)
-
-
-def send_ses(content, recipients, is_monthly):
-    if is_monthly:
-        word = '[Monthly]'
-    else:
-        word = '[Daily]'
-    sender = "dev2@useb.co.kr"
-    recipient = recipients
-    subject = f"{word} Face Server API Usage"
-    body_text = str(content)
-    body_html = str(content)
-    ses.send(sender, recipient, subject, body_text, body_html)
-
-
 def lambda_handler(event, context):
     is_monthly = event.get('monthly', False)
     if is_monthly:  # monthly usage (Payload comes from Amazon EventBridge Scheduler)
@@ -97,19 +116,42 @@ def lambda_handler(event, context):
         end_time = first_day_of_current_month - timedelta(days=1) + timedelta(hours=23, minutes=59, seconds=59,
                                                                               microseconds=999999)
         start_time = end_time.replace(day=1)
-        standard_date = start_time.date().strftime('%Y년 %m월')
+        standard_date = start_time.date().strftime('[Monthly] %Y년 %m월')
 
     elif not is_monthly:  # daily usage
         end_time = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         start_time = end_time - timedelta(days=1)
-        standard_date = start_time.date().strftime('%Y년 %m월 %d일')
+        standard_date = start_time.date().strftime('[Daily] %Y년 %m월 %d일')
 
     # Send Slack
-    usage = fs_usage(start_time, end_time, standard_date)
-    webhook_url = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")['SLACK_WEBHOOK_URL']
-    send_slack(content=converter.friendly_text(usage), webhook_url=webhook_url)
+    # usage_count = fs_usage_count(start_time, end_time, standard_date)
+    usage_raw = fs_usage_raw(start_time, end_time, standard_date)
+    # webhook_url = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")['SLACK_WEBHOOK_URL']
+    webhook_url = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")['SLACK_WEBHOOK_URL_common-notify']
+
+    # send_slack(content=converter.friendly_text(usage_count), webhook_url=webhook_url)
+    intergration.send_slack(content=usage_raw, webhook_url=webhook_url)
 
     # Send SES
-    recipients = ["yk.kwon@alcherainc.com", "dh.yang@alcherainc.com"]
-    # recipients = ["yk.kwon@alcherainc.com"]
-    send_ses(content=converter.list_to_html(usage), recipients=recipients, is_monthly=is_monthly)
+    # recipients = ["yk.kwon@alcherainc.com", "dh.yang@alcherainc.com", "chssha98@useb.co.kr"]
+    # intergration.send_ses(content=converter.list_to_html(usage), recipients=recipients, is_monthly=is_monthly)
+
+
+if __name__ == '__main__':
+    aws_account_id = '260923642723'
+    lambda_name = 'lambda-faceserver-apiMonitor'
+    event_dict = {}
+    context_dict = {
+        'log_group_name': f'/aws/lambda/{lambda_name}',
+        'function_name': {lambda_name},
+        'memory_limit_in_mb': 128,
+        'function_version': '$LATEST',
+        'invoked_function_arn': f'arn:aws:lambda:ap-northeast-2:{aws_account_id}:function:{lambda_name}',
+        'client_context': None,
+        'identity': {
+            'cognito_identity_id': None,
+            'cognito_identity_pool_id': None
+        }
+    }
+
+    lambda_handler(event_dict, context_dict)
