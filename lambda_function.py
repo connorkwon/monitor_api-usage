@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 
 import log_insight
 import intergration
-import getSecret
 import converter
 import slack
 
@@ -119,33 +118,31 @@ def set_daily():
 
 def lambda_handler(event, context):
     is_monthly = event.get('monthly', False)
-    webhook_url = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")[
+    webhook_url = intergration.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")[
         'SLACK_WEBHOOK_URL_common-notify']
-    token = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")[
+    token = intergration.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")[
         'SLACK_TOKEN_fileUpload']
-    channel_id = getSecret.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")[
+    channel_id = intergration.get_secrets(secret_name="slack-webhookURL-yk.kwon-alchera")[
         'SLACK_CHANNEL_ID']
 
     if is_monthly:  # monthly usage (Payload comes from Amazon EventBridge Scheduler)
-        set_monthly()
-        fs_usage_raw = get_fs_usage_raw(set_monthly()[0], set_monthly()[1], set_monthly()[2])
+        standard_date, start_time, end_time = set_monthly()
+        fs_usage_raw = get_fs_usage_raw(standard_date, start_time, end_time)
 
         file_path = 'usage.csv'
         with open(file_path, 'w', newline='', encoding='utf-8') as file:
             file.write(fs_usage_raw)
 
         slack.api_fileUpload(token=token, file=file_path, channel_id=channel_id)
-        # slack.webhook_send(message=fs_usage_raw, webhook_url=webhook_url)
     elif not is_monthly:  # daily usage
-        set_daily()
-        fs_usage_raw = get_fs_usage_raw(set_daily()[0], set_daily()[1], set_daily()[2])
+        standard_date, start_time, end_time = set_daily()
+        fs_usage_raw = get_fs_usage_raw(standard_date, start_time, end_time)
 
         file_path = 'usage.csv'
         with open(file_path, 'w', newline='', encoding='utf-8') as file:
             file.write(fs_usage_raw)
 
-        slack.api_fileUpload(token=token, file=file_path, channel_id=channel_id)
-        # slack.webhook_send(message=fs_usage_raw, webhook_url=webhook_url)
+        slack.webhook_send(message=fs_usage_raw, webhook_url=webhook_url)
     # Send SES
     # recipients = ["yk.kwon@alcherainc.com", "dh.yang@alcherainc.com", "chssha98@useb.co.kr"]
     # intergration.send_ses(content=converter.list_to_html(usage), recipients=recipients, is_monthly=is_monthly)
